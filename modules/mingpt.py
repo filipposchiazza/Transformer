@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import os
+import pickle
 
 
 
@@ -13,6 +14,21 @@ class MaskedSelfAttention(nn.Module):
                  block_size,
                  attention_dropout,
                  residual_dropout):
+        """ Masked self-attention layer for GPT model.
+
+        Parameters:
+        ----------
+        emb_dim : int
+            Embedding dimensionality.
+        num_heads : int
+            Number of attention heads.
+        block_size : int
+            Block size.
+        attention_dropout : float
+            Attention dropout.
+        residual_dropout : float
+            Residual dropout.
+        """
         super(MaskedSelfAttention, self).__init__()
         assert emb_dim % num_heads == 0, 'emb_dim should be divisible by num_heads'
         self.emb_dim = emb_dim
@@ -49,9 +65,9 @@ class MaskedSelfAttention(nn.Module):
 
         # causal self-attention; Self-attention is masked to prevent attending to future positions
         # self-attend (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        scale_factor = torch.sqrt(k.size(-1))   # scale to preserve variance to one
+        scale_factor = torch.sqrt(torch.Tensor([k.size(-1)])).to(x.device)   # scale to preserve variance to one
         attn = (q @ k.transpose(-2, -1)) / scale_factor 
-        attn = attn.masked_fill(self.mask == 0, float('-inf'))
+        attn = attn.masked_fill(self.mask[:, :, :T, :T] == 0, float('-inf'))
         attn = F.softmax(attn, dim=-1)
 
         # dropout
@@ -72,7 +88,22 @@ class Block(nn.Module):
                  num_heads,
                  block_size,
                  attention_dropout,
-                 residual_dropout,):
+                 residual_dropout):
+        """ GPT block.
+
+        Parameters:
+        ----------
+        emb_dim : int
+            Embedding dimensionality.
+        num_heads : int
+            Number of attention heads.
+        block_size : int
+            Block size.
+        attention_dropout : float
+            Attention dropout.
+        residual_dropout : float
+            Residual dropout.
+        """
         super(Block, self).__init__()
         self.ln1 = nn.LayerNorm(emb_dim)
         self.attn = MaskedSelfAttention(emb_dim, num_heads, block_size, attention_dropout, residual_dropout)
@@ -103,7 +134,27 @@ class GPT(nn.Module):
                  emb_dropout,
                  attention_dropout,
                  residual_dropout):
-        
+        """ GPT model.
+
+        Parameters:
+        ----------
+        vocab_size : int
+            Vocabulary size.
+        emb_dim : int
+            Embedding dimensionality.
+        num_heads : int
+            Number of attention heads.
+        num_layers : int
+            Number of layers.
+        block_size : int
+            Block size.
+        emb_dropout : float
+            Embedding dropout.
+        attention_dropout : float
+            Attention dropout.
+        residual_dropout : float
+            Residual dropout.
+        """
         super(GPT, self).__init__()
         self.vocab_size = vocab_size
         self.emb_dim = emb_dim
@@ -149,5 +200,38 @@ class GPT(nn.Module):
         x = self.ln(x)
         logits = self.head(x)
         return logits
+    
+
+
+    def save_model(self, save_folder):
+        if not os.path.exists(save_folder):
+            os.makedirs(save_folder)
+        param_file = os.path.join(save_folder, 'gpt_parameters.pkl')
+        parameters = [self.vocab_size, 
+                      self.emb_dim, 
+                      self.num_heads, 
+                      self.num_layers, 
+                      self.block_size, 
+                      self.emb_dropout, 
+                      self.attention_dropout, 
+                      self.residual_dropout]
+        with open(param_file, 'wb') as f:
+            pickle.dump(parameters, f)
+
+        model_file = os.path.join(save_folder, 'gpt_model.pt')
+        torch.save(self.state_dict(), model_file)
+
+
+    
+    @staticmethod
+    def load_model(save_folder):
+        param_file = os.path.join(save_folder, 'gpt_parameters.pkl')
+        with open(param_file, 'rb') as f:
+            parameters = pickle.load(f)
+        model = GPT(*parameters)
+        model_file = os.path.join(save_folder, 'gpt_model.pt')
+        model.load_state_dict(torch.load(model_file, map_location='cuda'))
+        return model
+        
 
         
